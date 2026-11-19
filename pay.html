@@ -61,8 +61,8 @@ document.getElementById("pay").addEventListener("click", async () => {
     try { await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_ID }] }); }
     catch (e) { if (e.code === 4902) await window.ethereum.request({ method: "wallet_addEthereumChain", params: [BASE_PARAMS] }); else throw e; }
 
-    const validBefore = Math.floor(Date.now() / 1000) + Math.min(acc.maxTimeoutSeconds || 300, 300);
-    const auth = { from, to: acc.payTo, value: acc.amount, validAfter: "0", validBefore: String(validBefore), nonce: randomNonce() };
+    const nowSec = Math.floor(Date.now() / 1000);
+    const auth = { from, to: acc.payTo, value: acc.amount, validAfter: String(nowSec - 60), validBefore: String(nowSec + 240), nonce: randomNonce() };
     const typed = {
       types: {
         EIP712Domain: [{name:"name",type:"string"},{name:"version",type:"string"},{name:"chainId",type:"uint256"},{name:"verifyingContract",type:"address"}],
@@ -76,7 +76,7 @@ document.getElementById("pay").addEventListener("click", async () => {
     const sig = await window.ethereum.request({ method: "eth_signTypedData_v4", params: [from, JSON.stringify(typed)] });
     say("Signed. Settling payment...");
 
-    const paymentPayload = { x402Version: req.x402Version, scheme: "exact", network: "eip155:8453", payload: { signature: sig, authorization: auth } };
+    const paymentPayload = { x402Version: req.x402Version, resource: req.resource, accepted: acc, payload: { signature: sig, authorization: auth } };
     const r1 = await fetch(RESOURCE, { headers: { "payment-signature": b64(JSON.stringify(paymentPayload)) } });
     const body = await r1.text();
     if (r1.ok) {
@@ -90,7 +90,9 @@ document.getElementById("pay").addEventListener("click", async () => {
     } else {
       say("Settlement failed (" + r1.status + "). No charge unless the server confirms a tx. Server said:");
       outEl.style.display = "block";
-      outEl.value = body.slice(0, 800) + "\n\nSigned payload (can be retried within 5 min of signing):\n" + JSON.stringify(paymentPayload);
+      let hdrs = "";
+      r1.headers.forEach((v, k) => { hdrs += k + ": " + v + "\n"; });
+      outEl.value = "HTTP " + r1.status + "\n" + hdrs + "\n" + body.slice(0, 800) + "\n\nSigned payload (share this with Instinct - it can be retried for a few minutes):\n" + JSON.stringify(paymentPayload);
     }
   } catch (e) {
     say("Stopped: " + (e && e.message ? e.message : e));
