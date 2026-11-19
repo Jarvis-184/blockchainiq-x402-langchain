@@ -1,0 +1,5 @@
+langchain-core>=0.3.0
+x402>=0.3.0
+httpx>=0.27.0
+eth-account>=0.13.0
+python-dotenv>=1.0.0
