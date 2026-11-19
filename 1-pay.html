@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockchain IQ x402 - one-tap $0.01 payment</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 24px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 1.25rem; }
+  .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin: 16px 0; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 0.95rem; }
+  .row span:first-child { color: #666; }
+  .row span:last-child { font-family: ui-monospace, monospace; word-break: break-all; text-align: right; }
+  button { width: 100%; padding: 14px; font-size: 1.05rem; border: 0; border-radius: 10px; background: #0052ff; color: #fff; }
+  button:disabled { background: #999; }
+  #status { margin-top: 14px; font-size: 0.95rem; white-space: pre-wrap; word-break: break-all; }
+  #out { margin-top: 14px; width: 100%; height: 160px; font-size: 0.75rem; display: none; }
+</style>
+</head>
+<body>
+<h1>Blockchain IQ - Crypto Market Brief</h1>
+<p>One x402 payment of exactly <b>$0.01 USDC</b> on <b>Base</b>. No token approvals, no other permissions. Your wallet will only ask you to <b>sign</b> a payment authorization (EIP-3009); the network fee is paid by the payment facilitator, not you.</p>
+<div class="card">
+  <div class="row"><span>Pay to</span><span id="payTo"></span></div>
+  <div class="row"><span>Amount</span><span>0.01 USDC</span></div>
+  <div class="row"><span>Network</span><span>Base (8453)</span></div>
+  <div class="row"><span>Token</span><span id="asset"></span></div>
+  <div class="row"><span>Valid for</span><span>5 minutes from tap</span></div>
+</div>
+<button id="pay">Sign the $0.01 payment</button>
+<div id="status"></div>
+<textarea id="out" readonly></textarea>
+<script>
+const RESOURCE = "https://www.blockchainiq.co/api/x402/v1/brief";
+const CHAIN_ID = "0x2105"; // Base 8453
+const BASE_PARAMS = { chainId: CHAIN_ID, chainName: "Base", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: ["https://mainnet.base.org"], blockExplorerUrls: ["https://basescan.org"] };
+const statusEl = document.getElementById("status");
+const outEl = document.getElementById("out");
+const say = (m) => { statusEl.textContent += m + "\n"; };
+
+function randomNonce() {
+  const b = new Uint8Array(32); crypto.getRandomValues(b);
+  return "0x" + Array.from(b).map(x => x.toString(16).padStart(2, "0")).join("");
+}
+function b64(s) { return btoa(unescape(encodeURIComponent(s))); }
+
+document.getElementById("pay").addEventListener("click", async () => {
+  statusEl.textContent = ""; outEl.style.display = "none";
+  try {
+    if (!window.ethereum) { say("No wallet found. Open this page inside your wallet app browser (MetaMask, Rabby, Coinbase Wallet)."); return; }
+    say("Fetching payment requirements...");
+    const r0 = await fetch(RESOURCE);
+    if (r0.status !== 402) { say("Unexpected response " + r0.status + " - the brief may already be paid or the endpoint changed. Stop here."); return; }
+    const req = JSON.parse(atob(r0.headers.get("payment-required")));
+    const acc = req.accepts.find(a => a.scheme === "exact" && a.network === "eip155:8453");
+    document.getElementById("payTo").textContent = acc.payTo;
+    document.getElementById("asset").textContent = acc.asset;
+
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const from = accounts[0];
+    try { await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_ID }] }); }
+    catch (e) { if (e.code === 4902) await window.ethereum.request({ method: "wallet_addEthereumChain", params: [BASE_PARAMS] }); else throw e; }
+
+    const validBefore = Math.floor(Date.now() / 1000) + Math.min(acc.maxTimeoutSeconds || 300, 300);
+    const auth = { from, to: acc.payTo, value: acc.amount, validAfter: "0", validBefore: String(validBefore), nonce: randomNonce() };
+    const typed = {
+      types: {
+        EIP712Domain: [{name:"name",type:"string"},{name:"version",type:"string"},{name:"chainId",type:"uint256"},{name:"verifyingContract",type:"address"}],
+        TransferWithAuthorization: [{name:"from",type:"address"},{name:"to",type:"address"},{name:"value",type:"uint256"},{name:"validAfter",type:"uint256"},{name:"validBefore",type:"uint256"},{name:"nonce",type:"bytes32"}]
+      },
+      primaryType: "TransferWithAuthorization",
+      domain: { name: acc.extra.name, version: acc.extra.version, chainId: 8453, verifyingContract: acc.asset },
+      message: auth
+    };
+    say("Check your wallet: it should show a $0.01 USDC payment authorization to " + acc.payTo + " . Nothing else.");
+    const sig = await window.ethereum.request({ method: "eth_signTypedData_v4", params: [from, JSON.stringify(typed)] });
+    say("Signed. Settling payment...");
+
+    const paymentPayload = { x402Version: req.x402Version, scheme: "exact", network: "eip155:8453", payload: { signature: sig, authorization: auth } };
+    const r1 = await fetch(RESOURCE, { headers: { "payment-signature": b64(JSON.stringify(paymentPayload)) } });
+    const body = await r1.text();
+    if (r1.ok) {
+      const pr = r1.headers.get("payment-response");
+      let tx = "";
+      try { tx = JSON.parse(atob(pr)).transaction || ""; } catch (e) {}
+      say("PAID. Settlement tx: " + tx);
+      say("Send this whole box to Arip's Instinct chat:");
+      outEl.style.display = "block";
+      outEl.value = JSON.stringify({ settlementTx: tx, response: body.slice(0, 500) }, null, 2);
+    } else {
+      say("Settlement failed (" + r1.status + "). No charge unless the server confirms a tx. Server said:");
+      outEl.style.display = "block";
+      outEl.value = body.slice(0, 800) + "\n\nSigned payload (can be retried within 5 min of signing):\n" + JSON.stringify(paymentPayload);
+    }
+  } catch (e) {
+    say("Stopped: " + (e && e.message ? e.message : e));
+  }
+});
+</script>
+</body>
+</html>
